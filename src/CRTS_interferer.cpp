@@ -542,16 +542,15 @@ void ChangeFrequency(Interferer interfererObj)
 // ========================================================================
 void PerformDutyCycle_On( Interferer interfererObj,
 			  node_parameters np,
-                          float time_onCycle)
+                          float time_onCycle, 
+                          timer dwellTimer)
   {
   std::vector<std::complex<float> > tx_buffer(TX_BUFFER_LENGTH);
   unsigned int samplesInBuffer = 0; 
   unsigned int randomFlag = 
     (interfererObj.interference_type == (AWGN)) ? 1 : 0; 
   timer onTimer = timer_create(); 
-  timer dwellTimer = timer_create(); 
   timer_tic(onTimer); 
-  timer_tic(dwellTimer); 
 
   while (timer_toc(onTimer) < time_onCycle)
     {
@@ -605,7 +604,6 @@ void PerformDutyCycle_On( Interferer interfererObj,
 
     }
   timer_destroy(onTimer); 
-  timer_destroy(dwellTimer); 
   }
 
 
@@ -615,12 +613,21 @@ void PerformDutyCycle_On( Interferer interfererObj,
 
 void PerformDutyCycle_Off(Interferer interfererObj, 
                           node_parameters np,
-                          float time_offCycle)
+                          float time_offCycle,
+                          timer dwellTimer)
   {
   timer offTimer = timer_create(); 
   timer_tic(offTimer); 
   while (timer_toc(offTimer) < time_offCycle)
       {
+      // determine if we need to freq hop 
+      if ((interfererObj.tx_freq_hop_type != (NONE)) && 
+          (timer_toc(dwellTimer) >= interfererObj.tx_freq_hop_dwell_time))
+        {
+        ChangeFrequency(interfererObj); 
+        usleep(100); 
+        timer_tic(dwellTimer); 
+        } 
       usleep(100); 
       Receive_command_from_controller(&interfererObj, &np);
       if (sig_terminate) 
@@ -706,6 +713,8 @@ int main(int argc, char ** argv)
 
   // for some interference types, transmit all of the time
   // by setting duty_cycle = 1.0
+  
+  /*
   switch(np.tx_freq_hop_type)
     {  
     case (ALTERNATING):
@@ -723,25 +732,35 @@ int main(int argc, char ** argv)
 	}
       break;
     }
+  */
 
   // ================================================================
   // BEGIN: Main Service Loop 
   // ================================================================
   sig_terminate = 0;
-  float time_onCycle = (interfererObj.period_duration * interfererObj.duty_cycle); 
-  float time_offCycle = (interfererObj.period_duration * (1 - interfererObj.duty_cycle)); 
+  float time_onCycle = 
+    (interfererObj.period_duration * interfererObj.duty_cycle); 
+  float time_offCycle = 
+    (interfererObj.period_duration * (1 - interfererObj.duty_cycle)); 
 
   // wait for start time and calculate stop time
   struct timeval tv;
   time_t time_s;
   time_t stop_time_s = start_time_s + run_time;
-  while(1){
+  while(1)
+    {
     gettimeofday(&tv, NULL);
     time_s = tv.tv_sec;
     if(time_s >= start_time_s)
-	  break;
-  }
+      {
+      break;
+      }
+    }
+
   
+  timer dwellTimer = timer_create(); 
+  timer_tic(dwellTimer); 
+
   while (time_s < stop_time_s)
     {
     Receive_command_from_controller(&interfererObj, &np);
@@ -751,23 +770,28 @@ int main(int argc, char ** argv)
       }
     PerformDutyCycle_On(interfererObj,
                         np, 
-                        time_onCycle); 
+                        time_onCycle,
+                        dwellTimer); 
     PerformDutyCycle_Off(interfererObj,
                          np,
-                         time_offCycle); 
+                         time_offCycle, 
+                         dwellTimer); 
     if (sig_terminate) 
       {
       break;
       }
-    
     // update current time
-	gettimeofday(&tv, NULL);
-	time_s = tv.tv_sec;
+    gettimeofday(&tv, NULL);
+    time_s = tv.tv_sec;
 
-	} // end main "for" interation loop 
+     } // end main: while (time_s < stop_time_s)
+
+  timer_destroy(dwellTimer); 
   // ================================================================
   // END: Main Service Loop 
   // ================================================================
+
+   
 
   printf("Sending termination message to controller\n");
   char term_message = 't';
